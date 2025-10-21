@@ -72,7 +72,11 @@ document.addEventListener('DOMContentLoaded', () => {
         messageDiv.innerHTML = '';
         const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if (error) {
-            messageDiv.innerHTML = showMessage(`<p>${error.message}</p>`, 'error');
+            if (error.message === 'Email not confirmed') {
+                messageDiv.innerHTML = showMessage(`<p>Seu e-mail ainda não foi confirmado. Por favor, verifique sua caixa de entrada e clique no link de confirmação.</p>`, 'error');
+            } else {
+                messageDiv.innerHTML = showMessage(`<p>E-mail ou senha inválidos.</p>`, 'error'); // Mensagem mais genérica por segurança
+            }
             loginBtn.disabled = false;
             loginBtn.innerText = 'Entrar';
         }
@@ -197,8 +201,8 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="border-b border-gray-100" data-post-container-id="${post.id}">
                 <div class="p-4 flex items-center justify-between">
                     <div class="flex items-center">
-                        <img src="${profile.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + username.charAt(0)}" class="w-10 h-10 rounded-full mr-3">
-                        <span class="font-semibold">${username}</span>
+                        <img data-action="open-other-profile" data-user-id="${post.user_id}" src="${profile.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + username.charAt(0)}" class="w-10 h-10 rounded-full mr-3 cursor-pointer">
+                        <span data-action="open-other-profile" data-user-id="${post.user_id}" class="font-semibold cursor-pointer">${username}</span>
                     </div>
                     ${isOwner ? `<button data-action="open-post-options" data-post-id="${post.id}" data-caption="${post.caption}" class="text-gray-500"><i data-lucide="more-horizontal"></i></button>` : ''}
                 </div>
@@ -227,6 +231,120 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>`;
         }).join('');
         lucide.createIcons();
+    };
+
+    const renderOtherUserProfile = async (userId) => {
+        if (userId === currentUser.id) {
+            // Se for o perfil do próprio usuário, apenas muda para a aba de perfil
+            const profileTab = document.querySelector('.tab-btn[data-page="perfil"]');
+            if (profileTab) profileTab.click();
+            return;
+        }
+
+        // Cria uma nova página para o perfil do outro usuário ou a reutiliza se já existir
+        let otherProfilePage = document.getElementById('page-other-profile');
+        if (!otherProfilePage) {
+            otherProfilePage = document.createElement('div');
+            otherProfilePage.id = 'page-other-profile';
+            otherProfilePage.className = 'page';
+            document.querySelector('main').appendChild(otherProfilePage);
+            pages.forEach(p => p.classList.remove('active')); // Garante que outras páginas não fiquem ativas
+        }
+
+        showSpinner(otherProfilePage);
+        otherProfilePage.classList.add('active');
+
+        // Esconde o header principal e mostra o de página com botão de voltar
+        mainHeader.classList.add('hidden');
+        pageHeader.classList.remove('hidden');
+        
+        const { data: profile, error: profileError } = await supabaseClient.from('profiles').select('*').eq('id', userId).single();
+        if (profileError || !profile) {
+            otherProfilePage.innerHTML = showMessage('Usuário não encontrado.', 'error');
+            return;
+        }
+
+        pageHeaderTitle.textContent = profile.username; // Atualiza o título do header
+
+        const [
+            { count: postCount },
+            { count: followersCount },
+            { count: followingCount },
+            { data: followStatus }
+        ] = await Promise.all([
+            supabaseClient.from('posts').select('*', { count: 'exact', head: true }).eq('user_id', userId),
+            supabaseClient.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', userId),
+            supabaseClient.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', userId),
+            supabaseClient.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', currentUser.id).eq('following_id', userId)
+        ]);
+
+        const isFollowing = followStatus.count > 0;
+        let followButtonText = isFollowing ? 'Seguindo' : 'Seguir';
+        let followButtonClass = isFollowing ? 'bg-gray-200 text-gray-800' : 'bg-pink-500 text-white';
+
+        if (profile.is_private && !isFollowing) {
+            const { data: requestStatus } = await supabaseClient.from('follow_requests').select('*', { count: 'exact', head: true }).eq('requester_id', currentUser.id).eq('receiver_id', userId);
+            if (requestStatus.count > 0) {
+                followButtonText = 'Pendente';
+                followButtonClass = 'bg-gray-200 text-gray-800';
+            }
+        }
+
+        otherProfilePage.innerHTML = `
+            <div class="p-4 border-b border-gray-100">
+                <div class="flex items-center mb-4">
+                    <img src="${profile.avatar_url || 'https://placehold.co/80x80/ccc/fff?text=' + (profile.username ? profile.username.charAt(0) : '?')}" class="w-20 h-20 rounded-full mr-4">
+                    <div class="flex-grow flex justify-around text-center">
+                        <div><p class="font-bold text-lg">${postCount || 0}</p><p class="text-sm text-gray-500">Posts</p></div>
+                        <div><p class="font-bold text-lg">${followersCount || 0}</p><p class="text-sm text-gray-500">Seguidores</p></div>
+                        <div><p class="font-bold text-lg">${followingCount || 0}</p><p class="text-sm text-gray-500">Seguindo</p></div>
+                    </div>
+                </div>
+                <div>
+                    <h2 class="font-bold">${profile.username}</h2>
+                    <p class="text-gray-600 text-sm">${profile.bio || ''}</p>
+                    ${profile.website_url ? `<a href="${profile.website_url}" target="_blank" class="text-blue-500 text-sm">${profile.website_url}</a>` : ''}
+                </div>
+                <div class="flex items-center space-x-2 mt-4">
+                    <button data-action="toggle-follow" data-user-id="${userId}" class="w-full ${followButtonClass} font-semibold py-2 rounded-lg text-sm">${followButtonText}</button>
+                </div>
+            </div>
+            <div id="other-profile-content"></div>
+        `;
+
+        const otherProfileContent = document.getElementById('other-profile-content');
+        if (profile.is_private && !isFollowing) {
+            otherProfileContent.innerHTML = `
+                <div class="text-center p-8 border-t">
+                    <i data-lucide="lock" class="w-8 h-8 mx-auto text-gray-400 mb-2"></i>
+                    <h3 class="font-bold">Esta conta é privada</h3>
+                    <p class="text-gray-500 text-sm">Siga esta conta para ver suas fotos.</p>
+                </div>
+            `;
+        } else {
+            showSpinner(otherProfileContent);
+            const { data: posts } = await supabaseClient.from('posts').select('*').eq('user_id', userId).order('created_at', { ascending: false });
+            if (!posts || posts.length === 0) {
+                otherProfileContent.innerHTML = `<p class="text-center text-gray-500 p-8">Nenhum post publicado.</p>`;
+            } else {
+                otherProfileContent.innerHTML = `<div class="grid grid-cols-3 gap-0.5">${posts.map(p => `
+                    <div data-action="open-post-detail" data-post-id="${p.id}" class="cursor-pointer aspect-square">
+                        <img src="${SUPABASE_URL}/storage/v1/object/public/posts-images/${p.image_url}" class="w-full h-full object-cover">
+                    </div>
+                `).join('')}</div>`;
+            }
+        }
+        lucide.createIcons();
+
+        // Configura o botão de voltar para esta página específica
+        const backButton = document.getElementById('back-button');
+        const newBackButton = backButton.cloneNode(true); // Clona para remover listeners antigos
+        backButton.parentNode.replaceChild(newBackButton, backButton);
+        newBackButton.addEventListener('click', () => {
+            otherProfilePage.classList.remove('active');
+            pageHeader.classList.add('hidden');
+            mainHeader.classList.remove('hidden');
+        }, { once: true }); // O listener só executa uma vez
     };
 
     const renderUserProfile = async (user) => {
@@ -717,23 +835,96 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const handleToggleFollow = async (button) => {
         const userIdToFollow = button.dataset.userId;
-        const isFollowing = button.textContent === 'Seguindo';
+        const currentState = button.textContent;
 
-        if (isFollowing) {
+        button.disabled = true;
+
+        if (currentState === 'Seguindo') {
             // Deixar de seguir
             const { error } = await supabaseClient.from('followers').delete().match({ follower_id: currentUser.id, following_id: userIdToFollow });
             if (!error) {
-                button.textContent = 'Seguir';
+                // Atualiza o botão em todos os lugares onde ele possa aparecer para este usuário
+                document.querySelectorAll(`button[data-action="toggle-follow"][data-user-id="${userIdToFollow}"]`).forEach(btn => {
+                    btn.textContent = 'Seguir';
+                    btn.classList.remove('bg-gray-200', 'text-gray-800', 'bg-gray-300');
+                    btn.classList.add('bg-pink-500', 'text-white');
+                });
             }
-        } else {
-            // Seguir
-            const { error } = await supabaseClient.from('followers').insert({ follower_id: currentUser.id, following_id: userIdToFollow });
+        } else if (currentState === 'Seguir') {
+            // Ao clicar em "Seguir", primeiro verificamos se o perfil é privado
+            const { data: targetProfile } = await supabaseClient.from('profiles').select('is_private').eq('id', userIdToFollow).single();
+            const isPrivate = targetProfile?.is_private;
+
+            if (isPrivate) {
+                // Enviar solicitação para seguir
+                const { error } = await supabaseClient.from('follow_requests').insert({ requester_id: currentUser.id, receiver_id: userIdToFollow });
+                if (!error) {
+                    document.querySelectorAll(`button[data-action="toggle-follow"][data-user-id="${userIdToFollow}"]`).forEach(btn => {
+                        btn.textContent = 'Pendente';
+                        btn.classList.remove('bg-pink-500', 'text-white');
+                        btn.classList.add('bg-gray-200', 'text-gray-800');
+                    });
+                }
+            } else {
+                // Seguir diretamente (perfil público)
+                const { error } = await supabaseClient.from('followers').insert({ follower_id: currentUser.id, following_id: userIdToFollow });
+                if (!error) {
+                    document.querySelectorAll(`button[data-action="toggle-follow"][data-user-id="${userIdToFollow}"]`).forEach(btn => {
+                        btn.textContent = 'Seguindo';
+                        btn.classList.remove('bg-pink-500', 'text-white');
+                        btn.classList.add('bg-gray-200', 'text-gray-800');
+                    });
+                }
+            }
+        } else if (currentState === 'Pendente') {
+            // Cancelar solicitação
+            const { error } = await supabaseClient.from('follow_requests').delete().match({ requester_id: currentUser.id, receiver_id: userIdToFollow });
             if (!error) {
-                button.textContent = 'Seguindo';
+                button.textContent = 'Seguir';
+                button.classList.remove('bg-gray-200', 'text-gray-800');
+                button.classList.add('bg-pink-500', 'text-white');
             }
         }
+
+        button.disabled = false;
+
         // Atualiza os contadores no perfil do usuário logado
         renderUserProfile(currentUser);
+    };
+
+    const handleAcceptFollow = async (button) => {
+        const requestId = button.dataset.requestId;
+        const actorId = button.dataset.actorId; // ID de quem quer seguir
+        const receiverId = currentUser.id; // ID de quem está aceitando (usuário logado)
+
+        button.disabled = true;
+        button.textContent = 'Aceitando...';
+
+        // 1. Adiciona o seguidor na tabela 'followers'
+        const { error: followError } = await supabaseClient.from('followers').insert({ follower_id: actorId, following_id: receiverId });
+
+        if (followError) {
+            alert('Erro ao aceitar solicitação: ' + followError.message);
+            button.disabled = false;
+            return;
+        }
+
+        // 2. Remove a solicitação da tabela 'follow_requests'
+        await supabaseClient.from('follow_requests').delete().eq('id', requestId);
+
+        // 3. Atualiza a UI da notificação
+        const notificationItem = button.closest('.p-4');
+        notificationItem.querySelector('p').innerHTML += ' <strong>(aceito)</strong>';
+        notificationItem.querySelectorAll('button').forEach(b => b.remove());
+    };
+
+    const handleDenyFollow = async (button) => {
+        const requestId = button.dataset.requestId;
+        button.disabled = true;
+        await supabaseClient.from('follow_requests').delete().eq('id', requestId);
+        const notificationItem = button.closest('.p-4');
+        notificationItem.querySelector('p').innerHTML += ' <strong>(recusado)</strong>';
+        notificationItem.querySelectorAll('button').forEach(b => b.remove());
     };
 
     const renderExplorePage = async () => {
@@ -782,18 +973,36 @@ document.addEventListener('DOMContentLoaded', () => {
         const { data: users, error } = await supabaseClient.from('profiles').select('id, username, avatar_url').ilike('username', `%${query}%`).neq('id', currentUser.id).limit(10);
         if (error) { resultsContainer.innerHTML = showMessage('Erro ao buscar usuários.', 'error'); return; }
 
-        const { data: followingData } = await supabaseClient.from('followers').select('following_id').eq('follower_id', currentUser.id);
-        const followingIds = new Set(followingData.map(f => f.following_id));
+        // Busca tanto quem o usuário já segue quanto as solicitações pendentes
+        const [followingRes, requestsRes] = await Promise.all([
+            supabaseClient.from('followers').select('following_id').eq('follower_id', currentUser.id),
+            supabaseClient.from('follow_requests').select('receiver_id').eq('requester_id', currentUser.id)
+        ]);
+
+        const followingIds = new Set((followingRes.data || []).map(f => f.following_id));
+        const pendingRequestIds = new Set((requestsRes.data || []).map(r => r.receiver_id));
 
         resultsContainer.innerHTML = users.map(user => {
             const isFollowing = followingIds.has(user.id);
+            const isPending = pendingRequestIds.has(user.id);
+
+            let buttonText = 'Seguir';
+            let buttonClass = 'bg-pink-500 text-white';
+            if (isFollowing) {
+                buttonText = 'Seguindo';
+                buttonClass = 'bg-gray-300 text-gray-800';
+            } else if (isPending) {
+                buttonText = 'Pendente';
+                buttonClass = 'bg-gray-300 text-gray-800';
+            }
+
             return `
-                <div class="p-4 flex items-center justify-between border-b border-gray-100">
-                    <div class="flex items-center">
+                <div class="p-4 flex items-center justify-between border-b border-gray-100" >
+                    <div class="flex items-center" data-action="open-other-profile" data-user-id="${user.id}">
                         <img src="${user.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + user.username.charAt(0)}" class="w-10 h-10 rounded-full mr-3">
                         <span class="font-semibold">${user.username}</span>
                     </div>
-                    <button data-action="toggle-follow" data-user-id="${user.id}" class="text-white font-semibold text-sm px-4 py-1 rounded-lg ${isFollowing ? 'bg-gray-300 text-gray-800' : 'bg-pink-500'}">${isFollowing ? 'Seguindo' : 'Seguir'}</button>
+                    <button data-action="toggle-follow" data-user-id="${user.id}" class="font-semibold text-sm px-4 py-1 rounded-lg ${buttonClass}">${buttonText}</button>
                 </div>
             `;
         }).join('');
@@ -815,7 +1024,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const notificationMessages = {
             like: 'curtiu sua publicação.',
             comment: 'comentou na sua publicação.',
-            follow: 'começou a seguir você.'
+            follow: 'começou a seguir você.',
+            follow_request: 'quer seguir você.' // Nova notificação
         };
 
         notificationsPage.innerHTML = notifications.map(n => `
@@ -823,6 +1033,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 <img src="${n.actor.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + n.actor.username.charAt(0)}" class="w-10 h-10 rounded-full mr-3">
                 <p class="flex-grow text-sm"><strong>${n.actor.username}</strong> ${notificationMessages[n.type] || 'interagiu com você.'}</p>
                 ${n.post_id && n.posts ? `<img src="${SUPABASE_URL}/storage/v1/object/public/posts-images/${n.posts.image_url}" class="w-10 h-10 object-cover rounded-md ml-2">` : ''}
+                ${n.type === 'follow_request' ? `
+                    <button data-action="accept-follow" data-request-id="${n.id}" data-actor-id="${n.actor_id}" class="bg-pink-500 text-white text-xs font-bold px-3 py-1 rounded-md ml-2">Aceitar</button>
+                    <button data-action="deny-follow" data-request-id="${n.id}" class="bg-gray-200 text-gray-700 text-xs font-bold px-3 py-1 rounded-md ml-1">Recusar</button>
+                ` : ''}
             </div>
         `).join('');
     };
@@ -895,7 +1109,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="p-6 text-center">
                 <h2 class="text-xl font-bold mb-4">Catalogar Peça</h2>
                 <p class="text-gray-500 mb-6">Adicione uma foto de uma peça de roupa para que nossa I.A. a categorize automaticamente.</p>
-                <input type="file" id="wardrobe-image-input" class="hidden" accept="image/*">
+                <input type="file" id="wardrobe-image-input" class="hidden" accept="image/*" capture="environment">
                 <button id="select-wardrobe-image-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md">Adicionar Peça</button>
                 <button data-action="close-modal" class="mt-2 text-gray-500 text-sm">Cancelar</button>
             </div>
@@ -1074,7 +1288,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <h2 class="text-xl font-bold mb-4">Análise de Look com I.A.</h2>
                 <p class="text-gray-500 mb-6">Envie uma foto do seu look para receber um feedback de estilo detalhado.</p>
                 <p class="text-sm text-gray-600 mb-4"><strong>Dica:</strong> Para uma análise precisa, use fotos nítidas que mostrem bem o look completo.</p>
-                <input type="file" id="analysis-image-input" class="hidden" accept="image/*">
+                <input type="file" id="analysis-image-input" class="hidden" accept="image/*" capture="environment">
                 <button id="select-analysis-image-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md">Selecionar Imagem</button>
                 <button data-action="close-modal" class="mt-2 text-gray-500 text-sm">Cancelar</button>
             </div>
@@ -1298,7 +1512,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="p-6 text-center">
                 <h2 class="text-xl font-bold mb-4">Criar Novo Post</h2>
                 <p class="text-gray-500 mb-6">Selecione uma imagem do seu dispositivo.</p>
-                <input type="file" id="post-image-input" class="hidden" accept="image/*">
+                <input type="file" id="post-image-input" class="hidden" accept="image/*" capture="environment">
                 <button id="select-image-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md">Selecionar Imagem</button>
                 <button data-action="close-modal" class="mt-2 text-gray-500 text-sm">Cancelar</button>
             </div>
@@ -1354,12 +1568,16 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const showPage = (pageId, title) => {
-        const isSubPage = ['comments'].includes(pageId);
+        const isSubPage = ['comments', 'other-profile'].includes(pageId);
 
         mainHeader.classList.toggle('hidden', isSubPage);
         pageHeader.classList.toggle('hidden', !isSubPage);
 
         if (isSubPage) {
+            // Se for uma sub-página que não seja a de outro perfil, usa o título passado
+            if (pageId !== 'other-profile') {
+                pageHeaderTitle.textContent = title;
+            }
             pageHeaderTitle.textContent = title;
         }
 
@@ -1497,6 +1715,9 @@ const showUpdatePasswordForm = () => {
                 'delete-comment': () => handleDeleteComment(element),
                 'like-comment': () => handleLikeComment(element),
                 'toggle-follow': () => handleToggleFollow(element),
+                'accept-follow': () => handleAcceptFollow(element),
+                'deny-follow': () => handleDenyFollow(element),
+                'open-other-profile': () => renderOtherUserProfile(element.dataset.userId),
                 'open-look-analysis': openLookAnalysisFlow,
                 'open-wardrobe-catalog': openWardrobeCatalogFlow,
                 'open-outfit-builder': openOutfitBuilderFlow,
@@ -1520,6 +1741,12 @@ const showUpdatePasswordForm = () => {
                 headerTitle.textContent = titles[button.dataset.page] || 'OUTFY';
                 mainHeader.classList.remove('hidden');
                 pageHeader.classList.add('hidden');
+
+                // Esconde a página de perfil de outro usuário se estiver ativa
+                const otherProfilePage = document.getElementById('page-other-profile');
+                if (otherProfilePage) {
+                    otherProfilePage.classList.remove('active');
+                }
             });
         });
         postButton.addEventListener('click', openPostModal);
@@ -1534,11 +1761,18 @@ const showUpdatePasswordForm = () => {
             renderNotificationsPage();
         });
 
-        backButton.addEventListener('click', () => {
-            // Por enquanto, o back button sempre volta para o feed.
-            // Isso pode ser melhorado no futuro com um histórico de navegação.
-            showPage('feed');
-            document.querySelector('.tab-btn[data-page="feed"]').classList.add('active');
+        // O botão de voltar agora é configurado dinamicamente por quem o abre
+        // Removendo o listener genérico.
+        // backButton.addEventListener('click', () => {
+        //     // Por enquanto, o back button sempre volta para o feed.
+        //     // Isso pode ser melhorado no futuro com um histórico de navegação.
+        //     const feedTab = document.querySelector('.tab-btn[data-page="feed"]');
+        //     if (feedTab) feedTab.click();
+        // });
+
+        pageHeader.querySelector('#back-button').addEventListener('click', () => {
+            const feedTab = document.querySelector('.tab-btn[data-page="feed"]');
+            if (feedTab) feedTab.click(); // Comportamento padrão de voltar para o feed
         });
 
         // Fecha o modal genérico ao clicar no fundo
