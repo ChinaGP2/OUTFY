@@ -102,14 +102,53 @@ document.addEventListener('DOMContentLoaded', () => {
     const showLoginForm = () => {
         authContainer.innerHTML = `
             <div id="auth-message"></div>
-            <input id="email" type="email" placeholder="E-mail" class="w-full p-3 border rounded-lg mb-3">
-            <input id="password" type="password" placeholder="Senha" class="w-full p-3 border rounded-lg mb-4">
+            <input id="email" type="email" placeholder="E-mail" class="w-full p-3 border rounded-lg mb-3" autocomplete="email">
+            <input id="password" type="password" placeholder="Senha" class="w-full p-3 border rounded-lg mb-2">
+            <div class="text-right mb-4">
+                <a href="#" id="show-forgot-password" class="text-sm text-pink-500 font-semibold">Esqueceu a senha?</a>
+            </div>
             <button id="login-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md mb-4">Entrar</button>
             <p class="text-center text-sm">Não tem uma conta? <a href="#" id="show-signup" class="text-pink-500 font-semibold">Cadastre-se</a></p>
         `;
         document.getElementById('show-signup').addEventListener('click', showSignupForm);
         document.getElementById('login-btn').addEventListener('click', handleLogin);
+        document.getElementById('show-forgot-password').addEventListener('click', showForgotPasswordForm);
     };
+    const showForgotPasswordForm = () => {
+        authContainer.innerHTML = `
+            <div id="auth-message"></div>
+            <h2 class="text-xl font-bold text-center mb-2">Recuperar Senha</h2>
+            <p class="text-gray-500 text-center text-sm mb-6">Digite seu e-mail para receber um link de recuperação.</p>
+            <input id="email" type="email" placeholder="Seu e-mail de cadastro" class="w-full p-3 border rounded-lg mb-4">
+            <button id="forgot-password-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md mb-4">Enviar Link</button>
+            <p class="text-center text-sm"><a href="#" id="back-to-login" class="text-pink-500 font-semibold">Voltar para Login</a></p>
+        `;
+        document.getElementById('back-to-login').addEventListener('click', showLoginForm);
+        document.getElementById('forgot-password-btn').addEventListener('click', handleForgotPassword);
+    };
+
+    const handleForgotPassword = async () => {
+        const email = document.getElementById('email').value;
+        const forgotBtn = document.getElementById('forgot-password-btn');
+        const messageDiv = document.getElementById('auth-message');
+        messageDiv.innerHTML = '';
+        if (!email) { messageDiv.innerHTML = showMessage('<p>Por favor, digite seu e-mail.</p>', 'error'); return; }
+
+        forgotBtn.disabled = true;
+        forgotBtn.innerText = 'Enviando...';
+
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email);
+
+        if (error) {
+            messageDiv.innerHTML = showMessage(`<p>${error.message}</p>`, 'error');
+            forgotBtn.disabled = false;
+            forgotBtn.innerText = 'Enviar Link';
+        } else {
+            authContainer.innerHTML = showMessage(`<p class="font-bold">Link enviado!</p><p>Verifique sua caixa de entrada (e spam) para o link de recuperação de senha.</p><button id="back-to-login" class="mt-4 text-pink-500 font-semibold">Voltar para Login</button>`, 'success');
+            document.getElementById('back-to-login').addEventListener('click', showLoginForm);
+        }
+    };
+
     const showSignupForm = () => {
          authContainer.innerHTML = `
             <div id="auth-message"></div>
@@ -605,46 +644,75 @@ document.addEventListener('DOMContentLoaded', () => {
         // Seleciona todos os SVGs de coração para este post (no feed e no modal)
         const svgIcons = document.querySelectorAll(`[data-action="like-post"][data-post-id="${postId}"] svg.lucide-heart`);
         if (svgIcons.length === 0) return;
-        const isLiked = svgIcons[0].classList.contains('filled-blue');
 
-        if (isLiked) {
+        // Desabilita os botões para evitar cliques duplos
+        svgIcons.forEach(svg => svg.closest('button').disabled = true);
+
+        // 1. Check current like status from DB
+        const { data: existingLike, error: likeCheckError } = await supabaseClient
+            .from('like')
+            .select('user_id') // Verifica por uma coluna que sabemos que existe
+            .eq('user_id', currentUser.id)
+            .eq('post_id', postId)
+            .maybeSingle(); // Use maybeSingle() to return null if not found, instead of erroring
+
+        if (likeCheckError && likeCheckError.code !== 'PGRST116') { // PGRST116 is "No rows found"
+            console.error("[handleLikePost] Erro ao verificar curtida existente:", likeCheckError);
+            alert("Erro ao verificar curtida: " + likeCheckError.message);
+            svgIcons.forEach(svg => svg.closest('button').disabled = false);
+            return;
+        }
+
+        const isCurrentlyLiked = existingLike !== null;
+        console.log(`[handleLikePost] Post ID: ${postId}, User ID: ${currentUser.id}, isCurrentlyLiked (from DB): ${isCurrentlyLiked}`);
+
+        if (isCurrentlyLiked) {
+            // User wants to UNLIKE
+            console.log(`[handleLikePost] Attempting to UNLIKE post ${postId}`);
             // Descurtir no DB
-            const { error } = await supabaseClient.from('like').delete().match({ user_id: currentUser.id, post_id: postId });
-            if (!error) {
-                // Se sucesso, atualiza a UI
+            const { error: deleteError } = await supabaseClient.from('like').delete().match({ user_id: currentUser.id, post_id: postId });
+            if (!deleteError) {
+                console.log(`[handleLikePost] Successfully deleted like for post ${postId}`);
                 svgIcons.forEach(svg => svg.classList.remove('filled-blue'));
                 document.querySelectorAll(`strong[data-likes-count="${postId}"]`).forEach(el => {
                     el.textContent = Math.max(0, parseInt(el.textContent, 10) - 1);
                 });
-                await supabaseClient.rpc('increment_likes_count', { post_id_to_update: postId, increment_value: -1 });
+                // Depois, atualiza o contador no DB
+                const { error: rpcError } = await supabaseClient.rpc('increment_likes_count', { post_id_to_update: postId, increment_value: -1 });
+                if (rpcError) {
+                    console.error("[handleLikePost] Erro RPC ao decrementar likes_count:", rpcError);
+                }
+            } else {
+                console.error("[handleLikePost] Erro ao descurtir post:", deleteError);
+                alert("Erro ao descurtir post: " + deleteError.message);
             }
         } else {
+            // User wants to LIKE
+            console.log(`[handleLikePost] Attempting to LIKE post ${postId}`);
             // Curtir no DB
-            // Usamos 'upsert' para inserir a curtida. Se a curtida (combinação de user_id e post_id) já existir,
-            // ele não fará nada e não retornará um erro, resolvendo o problema de "duplicate key" e o erro de sintaxe com "LIKE".
-            const { error } = await supabaseClient.from('like').upsert({ user_id: currentUser.id, post_id: postId });
-
-            if (!error) { // Se não houver erro, prossegue com a atualização da UI e notificação
-                // Se sucesso, atualiza a UI
+            const { error: insertError } = await supabaseClient.from('like').insert({ user_id: currentUser.id, post_id: postId });
+            if (!insertError) {
+                console.log(`[handleLikePost] Successfully inserted like for post ${postId}`);
                 svgIcons.forEach(svg => svg.classList.add('filled-blue'));
                 document.querySelectorAll(`strong[data-likes-count="${postId}"]`).forEach(el => {
                     el.textContent = parseInt(el.textContent, 10) + 1;
                 });
-                await supabaseClient.rpc('increment_likes_count', { post_id_to_update: postId, increment_value: 1 });
-
-                // Notificação (pode continuar em segundo plano)
-                supabaseClient.from('posts').select('user_id').eq('id', postId).single().then(({ data: postOwner }) => {
-                    if (postOwner && postOwner.user_id !== currentUser.id) {
-                        supabaseClient.from('notifications').insert({
-                            user_id: postOwner.user_id,
-                            actor_id: currentUser.id,
-                            type: 'like',
-                            post_id: postId
-                        }).then();
-                    }
-                });
-            } else { console.error("Erro ao curtir post:", error); alert("Erro ao curtir post: " + error.message); }
-        } // Fecha o bloco 'else' (curtir)
+                // Depois, atualiza o contador e envia notificação
+                const { error: rpcError } = await supabaseClient.rpc('increment_likes_count', { post_id_to_update: postId, increment_value: 1 });
+                if (rpcError) {
+                    console.error("[handleLikePost] Erro RPC ao incrementar likes_count:", rpcError);
+                }
+                const { data: postOwner } = await supabaseClient.from('posts').select('user_id').eq('id', postId).single();
+                if (postOwner && postOwner.user_id !== currentUser.id) {
+                    await supabaseClient.from('notifications').upsert({ user_id: postOwner.user_id, actor_id: currentUser.id, type: 'like', post_id: postId }, { onConflict: 'user_id,actor_id,type,post_id' });
+                }
+            } else {
+                console.error("[handleLikePost] Erro ao curtir post:", insertError);
+                alert("Erro ao curtir post: " + insertError.message);
+            }
+        }
+        // Reabilita os botões após a operação
+        svgIcons.forEach(svg => svg.closest('button').disabled = false);
     }; // Fecha a função handleLikePost
 
     const handleToggleFollow = async (button) => {
@@ -1151,13 +1219,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     <option value="Masculino" ${profile.gender === 'Masculino' ? 'selected' : ''}>Masculino</option>
                     <option value="Nao-binario" ${profile.gender === 'Nao-binario' ? 'selected' : ''}>Não-binário</option>
                     <option value="Prefiro não informar" ${!profile.gender || profile.gender === 'Prefiro não informar' || profile.gender === 'Não-binário' ? 'selected' : ''}>Prefiro não informar</option>
-                </select>
+                </select>                
+                <div class="flex items-center mb-4">
+                    <input type="checkbox" id="edit-is-private" class="mr-2 rounded text-pink-500 focus:ring-pink-500" ${profile.is_private ? 'checked' : ''}>
+                    <label for="edit-is-private" class="text-sm font-medium">Perfil Privado</label>
+                </div>
                 <div class="flex space-x-2">
                     <button data-action="close-modal" class="w-full bg-gray-200 text-gray-800 font-semibold py-2 rounded-lg">Cancelar</button>
                     <button data-action="save-profile" class="w-full bg-pink-500 text-white font-semibold py-2 rounded-lg">Salvar</button>
                 </div>
             </div>
         `);
+
         // Adiciona event listeners para o upload de avatar APÓS o modal ser aberto
         document.getElementById('change-avatar-btn').addEventListener('click', () => document.getElementById('avatar-upload-input').click());
         document.getElementById('avatar-upload-input').addEventListener('change', (e) => {
@@ -1211,7 +1284,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const bio = document.getElementById('edit-bio').value;
         const website_url = document.getElementById('edit-website').value;
         const gender = document.getElementById('edit-gender').value;
-        const { error } = await supabaseClient.from('profiles').update({ username, bio, website_url, gender }).eq('id', currentUser.id);
+        const is_private = document.getElementById('edit-is-private').checked;
+        const { error } = await supabaseClient.from('profiles').update({ username, bio, website_url, gender, is_private }).eq('id', currentUser.id);
         if (error) { alert(`Erro ao atualizar: ${error.message}`); }
         else {
             closeModal();
@@ -1319,11 +1393,83 @@ document.addEventListener('DOMContentLoaded', () => {
         window.supabaseClient = supabaseClient; // Expondo o cliente para depuração no console
         addEventListeners();
         supabaseClient.auth.onAuthStateChange((_event, session) => {
+// Adicione esta função também
+const handleUpdatePassword = async () => {
+    const password = document.getElementById('password').value;
+    const updateBtn = document.getElementById('update-password-btn');
+    const messageDiv = document.getElementById('auth-message');
+    messageDiv.innerHTML = '';
+
+    if (password.length < 6) {
+        messageDiv.innerHTML = showMessage('<p>A senha deve ter no mínimo 6 caracteres.</p>', 'error');
+        return;
+    }
+
+    updateBtn.disabled = true;
+    updateBtn.innerText = 'Salvando...';
+
+    const { error } = await supabaseClient.auth.updateUser({ password: password });
+
+    if (error) {
+        messageDiv.innerHTML = showMessage(`<p>${error.message}</p>`, 'error');
+        updateBtn.disabled = false;
+        updateBtn.innerText = 'Salvar Nova Senha';
+    } else {
+        authContainer.innerHTML = showMessage(`<p class="font-bold">Senha atualizada!</p><p>Sua senha foi alterada com sucesso. Você já pode fazer o login.</p><button id="back-to-login" class="mt-4 text-pink-500 font-semibold">Ir para Login</button>`, 'success');
+        document.getElementById('back-to-login').addEventListener('click', showLoginForm);
+    }
+};
+// Adicione esta função junto com as outras de autenticação (showLoginForm, etc.)
+const showUpdatePasswordForm = () => {
+    authContainer.innerHTML = `
+        <div id="auth-message"></div>
+        <h2 class="text-xl font-bold text-center mb-2">Crie uma Nova Senha</h2>
+        <p class="text-gray-500 text-center text-sm mb-6">Digite sua nova senha abaixo.</p>
+        <input id="password" type="password" placeholder="Nova Senha (mín. 6 caracteres)" class="w-full p-3 border rounded-lg mb-4">
+        <button id="update-password-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md mb-4">Salvar Nova Senha</button>
+        <p class="text-center text-sm"><a href="#" id="back-to-login" class="text-pink-500 font-semibold">Voltar para Login</a></p>
+    `;
+    document.getElementById('back-to-login').addEventListener('click', showLoginForm);
+    document.getElementById('update-password-btn').addEventListener('click', handleUpdatePassword);
+};
+            // Se o evento for de recuperação de senha, mostre o formulário para atualizar.
+            if (_event === 'PASSWORD_RECOVERY') {
+                authScreen.style.display = 'flex';
+                appContent.style.display = 'none';
+                showUpdatePasswordForm();
+                return; // Impede que o resto da função execute
+            }
             updateUIForSession(session);
         });
         supabaseClient.auth.getSession().then(({ data: { session } }) => {
             updateUIForSession(session);
         });
+    };
+
+    const handleUpdatePassword = async () => {
+        const password = document.getElementById('password').value;
+        const updateBtn = document.getElementById('update-password-btn');
+        const messageDiv = document.getElementById('auth-message');
+        messageDiv.innerHTML = '';
+
+        if (password.length < 6) {
+            messageDiv.innerHTML = showMessage('<p>A senha deve ter no mínimo 6 caracteres.</p>', 'error');
+            return;
+        }
+
+        updateBtn.disabled = true;
+        updateBtn.innerText = 'Salvando...';
+
+        const { error } = await supabaseClient.auth.updateUser({ password: password });
+
+        if (error) {
+            messageDiv.innerHTML = showMessage(`<p>${error.message}</p>`, 'error');
+            updateBtn.disabled = false;
+            updateBtn.innerText = 'Salvar Nova Senha';
+        } else {
+            authContainer.innerHTML = showMessage(`<p class="font-bold">Senha atualizada!</p><p>Sua senha foi alterada com sucesso. Você já pode fazer o login.</p><button id="back-to-login" class="mt-4 text-pink-500 font-semibold">Ir para Login</button>`, 'success');
+            document.getElementById('back-to-login').addEventListener('click', showLoginForm);
+        }
     };
     
     const addEventListeners = () => {
@@ -1416,5 +1562,18 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     };
     
+    const showUpdatePasswordForm = () => {
+        authContainer.innerHTML = `
+            <div id="auth-message"></div>
+            <h2 class="text-xl font-bold text-center mb-2">Crie uma Nova Senha</h2>
+            <p class="text-gray-500 text-center text-sm mb-6">Digite sua nova senha abaixo.</p>
+            <input id="password" type="password" placeholder="Nova Senha (mín. 6 caracteres)" class="w-full p-3 border rounded-lg mb-4">
+            <button id="update-password-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md mb-4">Salvar Nova Senha</button>
+            <p class="text-center text-sm"><a href="#" id="back-to-login" class="text-pink-500 font-semibold">Voltar para Login</a></p>
+        `;
+        document.getElementById('back-to-login').addEventListener('click', showLoginForm);
+        document.getElementById('update-password-btn').addEventListener('click', handleUpdatePassword);
+    };
+
     initialize();
 });
