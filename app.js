@@ -1,13 +1,13 @@
 const SUPABASE_URL = 'https://xrhatawtpnopxkmmpsyb.supabase.co'; 
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhyaGF0YXd0cG5vcHhrbW1wc3liIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjA5MjI4OTEsImV4cCI6MjA3NjQ5ODg5MX0.ox-Wj5c7efrssSzbcmxiTypAtzXo2pUWVERk1ErSTVo';
 
-// Importa a biblioteca de I.A. diretamente. Isso garante que ela estará carregada antes de ser usada.
+// Importa a biblioteca de I.A. diretamente. Isso garante que ela estará carregada antes de ser usada. (Removido para o contexto do app.js, pois a função analyze-look é chamada via Edge Function)
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1';
 
 // Configuração da I.A.: Desabilita o carregamento de modelos locais e força o uso do CDN da Hugging Face.
 env.allowLocalModels = false;
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const { createClient } = supabase;
     let supabaseClient;
     let currentUser = null;
@@ -72,14 +72,10 @@ document.addEventListener('DOMContentLoaded', () => {
         messageDiv.innerHTML = '';
         const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
         if (error) {
-            if (error.message === 'Email not confirmed') {
-                messageDiv.innerHTML = showMessage(`<p>Seu e-mail ainda não foi confirmado. Por favor, verifique sua caixa de entrada e clique no link de confirmação.</p>`, 'error');
-            } else {
-                messageDiv.innerHTML = showMessage(`<p>E-mail ou senha inválidos.</p>`, 'error'); // Mensagem mais genérica por segurança
-            }
+            messageDiv.innerHTML = showMessage(`<p>${error.message === 'Email not confirmed' ? 'Seu e-mail ainda não foi confirmado. Por favor, verifique sua caixa de entrada.' : 'E-mail ou senha inválidos.'}</p>`, 'error');
             loginBtn.disabled = false;
             loginBtn.innerText = 'Entrar';
-        }
+        } // O login bem-sucedido é tratado pelo onAuthStateChange
     };
     const handleSignup = async () => {
         const username = document.getElementById('username').value;
@@ -200,9 +196,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return `
             <div class="border-b border-gray-100" data-post-container-id="${post.id}">
                 <div class="p-4 flex items-center justify-between">
-                    <div class="flex items-center">
-                        <img data-action="open-other-profile" data-user-id="${post.user_id}" src="${profile.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + username.charAt(0)}" class="w-10 h-10 rounded-full mr-3 cursor-pointer">
-                        <span data-action="open-other-profile" data-user-id="${post.user_id}" class="font-semibold cursor-pointer">${username}</span>
+                    <div class="flex items-center" data-action="open-other-profile" data-user-id="${post.user_id}" class="cursor-pointer">
+                        <img src="${profile.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + username.charAt(0)}" class="w-10 h-10 rounded-full mr-3 pointer-events-none">
+                        <span class="font-semibold pointer-events-none">${username}</span>
                     </div>
                     ${isOwner ? `<button data-action="open-post-options" data-post-id="${post.id}" data-caption="${post.caption}" class="text-gray-500"><i data-lucide="more-horizontal"></i></button>` : ''}
                 </div>
@@ -233,6 +229,8 @@ document.addEventListener('DOMContentLoaded', () => {
         lucide.createIcons();
     };
 
+    // --- NAVEGAÇÃO E RENDERIZAÇÃO DE PERFIS ---
+
     const renderOtherUserProfile = async (userId) => {
         if (userId === currentUser.id) {
             // Se for o perfil do próprio usuário, apenas muda para a aba de perfil
@@ -241,15 +239,16 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Cria uma nova página para o perfil do outro usuário ou a reutiliza se já existir
+        // Reutiliza a página de perfil, mas a preenche com dados do outro usuário.
         let otherProfilePage = document.getElementById('page-other-profile');
         if (!otherProfilePage) {
             otherProfilePage = document.createElement('div');
             otherProfilePage.id = 'page-other-profile';
             otherProfilePage.className = 'page';
             document.querySelector('main').appendChild(otherProfilePage);
-            pages.forEach(p => p.classList.remove('active')); // Garante que outras páginas não fiquem ativas
         }
+
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
 
         showSpinner(otherProfilePage);
         otherProfilePage.classList.add('active');
@@ -257,7 +256,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Esconde o header principal e mostra o de página com botão de voltar
         mainHeader.classList.add('hidden');
         pageHeader.classList.remove('hidden');
-        
+
         const { data: profile, error: profileError } = await supabaseClient.from('profiles').select('*').eq('id', userId).single();
         if (profileError || !profile) {
             otherProfilePage.innerHTML = showMessage('Usuário não encontrado.', 'error');
@@ -270,24 +269,23 @@ document.addEventListener('DOMContentLoaded', () => {
             { count: postCount },
             { count: followersCount },
             { count: followingCount },
-            { data: followStatus }
+            { data: followStatus, count: followStatusCount },
+            { data: requestStatus, count: requestStatusCount }
         ] = await Promise.all([
             supabaseClient.from('posts').select('*', { count: 'exact', head: true }).eq('user_id', userId),
             supabaseClient.from('followers').select('*', { count: 'exact', head: true }).eq('following_id', userId),
             supabaseClient.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', userId),
-            supabaseClient.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', currentUser.id).eq('following_id', userId)
+            supabaseClient.from('followers').select('*', { count: 'exact', head: true }).eq('follower_id', currentUser.id).eq('following_id', userId),
+            supabaseClient.from('follow_requests').select('*', { count: 'exact', head: true }).eq('requester_id', currentUser.id).eq('receiver_id', userId)
         ]);
 
-        const isFollowing = followStatus.count > 0;
+        const isFollowing = followStatusCount > 0;
         let followButtonText = isFollowing ? 'Seguindo' : 'Seguir';
         let followButtonClass = isFollowing ? 'bg-gray-200 text-gray-800' : 'bg-pink-500 text-white';
 
-        if (profile.is_private && !isFollowing) {
-            const { data: requestStatus } = await supabaseClient.from('follow_requests').select('*', { count: 'exact', head: true }).eq('requester_id', currentUser.id).eq('receiver_id', userId);
-            if (requestStatus.count > 0) {
-                followButtonText = 'Pendente';
-                followButtonClass = 'bg-gray-200 text-gray-800';
-            }
+        if (requestStatusCount > 0) {
+            followButtonText = 'Pendente';
+            followButtonClass = 'bg-gray-200 text-gray-800';
         }
 
         otherProfilePage.innerHTML = `
@@ -295,9 +293,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="flex items-center mb-4">
                     <img src="${profile.avatar_url || 'https://placehold.co/80x80/ccc/fff?text=' + (profile.username ? profile.username.charAt(0) : '?')}" class="w-20 h-20 rounded-full mr-4">
                     <div class="flex-grow flex justify-around text-center">
-                        <div><p class="font-bold text-lg">${postCount || 0}</p><p class="text-sm text-gray-500">Posts</p></div>
-                        <div><p class="font-bold text-lg">${followersCount || 0}</p><p class="text-sm text-gray-500">Seguidores</p></div>
-                        <div><p class="font-bold text-lg">${followingCount || 0}</p><p class="text-sm text-gray-500">Seguindo</p></div>
+                        <div><p class="font-bold text-lg" data-profile-stat="posts">${postCount || 0}</p><p class="text-sm text-gray-500">Posts</p></div>
+                        <div><p class="font-bold text-lg" data-profile-stat="followers">${followersCount || 0}</p><p class="text-sm text-gray-500">Seguidores</p></div>
+                        <div><p class="font-bold text-lg" data-profile-stat="following">${followingCount || 0}</p><p class="text-sm text-gray-500">Seguindo</p></div>
                     </div>
                 </div>
                 <div>
@@ -305,7 +303,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <p class="text-gray-600 text-sm">${profile.bio || ''}</p>
                     ${profile.website_url ? `<a href="${profile.website_url}" target="_blank" class="text-blue-500 text-sm">${profile.website_url}</a>` : ''}
                 </div>
-                <div class="flex items-center space-x-2 mt-4">
+                <div class="flex items-center mt-4">
                     <button data-action="toggle-follow" data-user-id="${userId}" class="w-full ${followButtonClass} font-semibold py-2 rounded-lg text-sm">${followButtonText}</button>
                 </div>
             </div>
@@ -341,12 +339,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const newBackButton = backButton.cloneNode(true); // Clona para remover listeners antigos
         backButton.parentNode.replaceChild(newBackButton, backButton);
         newBackButton.addEventListener('click', () => {
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             otherProfilePage.classList.remove('active');
             pageHeader.classList.add('hidden');
             mainHeader.classList.remove('hidden');
+            document.getElementById('page-feed').classList.add('active'); // Volta para o feed
         }, { once: true }); // O listener só executa uma vez
     };
-
     const renderUserProfile = async (user) => {
         const profilePage = document.getElementById('page-perfil');
         showSpinner(profilePage);
@@ -373,9 +372,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="flex items-center mb-4">
                     <img src="${profile.avatar_url || 'https://placehold.co/80x80/ccc/fff?text=' + (profile.username ? profile.username.charAt(0) : '?')}" class="w-20 h-20 rounded-full mr-4">
                     <div class="flex-grow flex justify-around text-center">
-                        <div><p class="font-bold text-lg">${postCount || 0}</p><p class="text-sm text-gray-500">Posts</p></div>
-                        <div><p class="font-bold text-lg">${followersCount || 0}</p><p class="text-sm text-gray-500">Seguidores</p></div>
-                        <div><p class="font-bold text-lg">${followingCount || 0}</p><p class="text-sm text-gray-500">Seguindo</p></div>
+                        <div><p class="font-bold text-lg" data-profile-stat="posts">${postCount || 0}</p><p class="text-sm text-gray-500">Posts</p></div>
+                        <div><p class="font-bold text-lg" data-profile-stat="followers">${followersCount || 0}</p><p class="text-sm text-gray-500">Seguidores</p></div>
+                        <div><p class="font-bold text-lg" data-profile-stat="following">${followingCount || 0}</p><p class="text-sm text-gray-500">Seguindo</p></div>
                     </div>
                 </div>
                 <div>
@@ -399,7 +398,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.profile-tab').forEach(tab => tab.addEventListener('click', () => switchProfileTab(tab, user)));
         renderUserPosts(user);
     };
-    
+
     const switchProfileTab = (clickedTab, user) => {
         document.querySelectorAll('.profile-tab').forEach(tab => tab.classList.remove('active'));
         clickedTab.classList.add('active');
@@ -439,7 +438,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             `).join('')}</div>`;
     };
-    
+
     const openPostDetailView = async (postId) => {
         const postDetailContainer = document.getElementById('post-detail-modal');
         showSpinner(postDetailContainer);
@@ -461,12 +460,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Verifica se o usuário atual curtiu ou salvou este post
         const { data: likeData } = await supabaseClient.from('like').select('post_id').eq('user_id', currentUser.id).eq('post_id', postId);
         const { data: saveData } = await supabaseClient.from('saved_posts').select('post_id').eq('user_id', currentUser.id).eq('post_id', postId);
-        
+
         const isOwner = post.user_id === currentUser.id;
         let isFollowing = false;
+        let isPending = false;
         if (!isOwner) {
-            const { data: followingData } = await supabaseClient.from('followers').select('*').eq('follower_id', currentUser.id).eq('following_id', post.user_id);
+            const [{ data: followingData }, { data: requestData }] = await Promise.all([
+                supabaseClient.from('followers').select('*').eq('follower_id', currentUser.id).eq('following_id', post.user_id),
+                supabaseClient.from('follow_requests').select('*').eq('requester_id', currentUser.id).eq('receiver_id', post.user_id)
+            ]);
             isFollowing = followingData && followingData.length > 0;
+            isPending = requestData && requestData.length > 0;
         }
 
         const isLiked = likeData && likeData.length > 0; // Mais eficiente
@@ -476,12 +480,12 @@ document.addEventListener('DOMContentLoaded', () => {
         postDetailContainer.innerHTML = `
             <div class="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] flex flex-col transform transition-transform duration-300 scale-100">
                 <div class="p-4 bg-white flex items-center justify-between shrink-0 border-b border-gray-200 rounded-t-2xl">
-                    <div class="flex items-center flex-grow">
-                        <img src="${post.profiles.avatar_url || 'https://placehold.co/32x32/ccc/fff?text=' + post.profiles.username.charAt(0)}" class="w-8 h-8 rounded-full mr-2">
-                        <span class="font-bold">${post.profiles.username}</span>
+                    <div class="flex items-center flex-grow" data-action="open-other-profile" data-user-id="${post.user_id}" class="cursor-pointer">
+                        <img src="${post.profiles.avatar_url || 'https://placehold.co/32x32/ccc/fff?text=' + post.profiles.username.charAt(0)}" class="w-8 h-8 rounded-full mr-2 pointer-events-none">
+                        <span class="font-bold pointer-events-none">${post.profiles.username}</span>
                         ${!isOwner ? `
                             <span class="mx-2 text-gray-400">&bull;</span>
-                            <button data-action="toggle-follow" data-user-id="${post.user_id}" class="text-pink-500 font-semibold text-sm">${isFollowing ? 'Seguindo' : 'Seguir'}</button>
+                            <button data-action="toggle-follow" data-user-id="${post.user_id}" class="text-pink-500 font-semibold text-sm">${isFollowing ? 'Seguindo' : (isPending ? 'Pendente' : 'Seguir')}</button>
                         ` : ''}
                     </div>
                     ${isOwner ? `<button data-action="open-post-options" data-post-id="${post.id}" data-caption="${post.caption}"><i data-lucide="more-horizontal"></i></button>` : '<div class="w-8"></div>'}
@@ -550,15 +554,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 <img src="${comment.profiles.avatar_url || 'https://placehold.co/32x32/ccc/fff?text=' + comment.profiles.username.charAt(0)}" class="w-8 h-8 rounded-full mr-3 shrink-0">
                 <div class="text-sm flex-grow">
                     <p><strong>${comment.profiles.username}</strong> ${comment.content}</p>
-                    <div class="flex items-center text-xs text-gray-500 mt-1 space-x-2">
-                        <span>${comment.likes_count > 0 ? `<span data-comment-likes-count="${comment.id}">${comment.likes_count}</span> curtida(s)` : ''}</span>
+                    <div class="flex items-center text-xs text-gray-500 mt-1 space-x-2 comment-likes-container">
+                        ${comment.likes_count > 0 ? `<span><span data-comment-likes-count="${comment.id}">${comment.likes_count}</span> curtida(s)</span>` : '<span></span>'}
                     </div>
                 </div>
                 <div class="flex items-center ml-2 shrink-0">
                     ${comment.user_id === currentUser.id ? `
                         <button data-action="delete-comment" data-comment-id="${comment.id}" data-post-id="${postId}" class="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
                     ` : ''}
-                    <button data-action="like-comment" data-comment-id="${comment.id}" class="text-gray-400 hover:text-red-500 ml-2">
+                    <button data-action="like-comment" data-comment-id="${comment.id}" data-post-id="${postId}" class="text-gray-400 hover:text-red-500 ml-2">
                         <i data-lucide="heart" class="w-4 h-4 ${isLiked ? 'filled-blue' : ''}"></i>
                     </button>
                 </div>
@@ -641,44 +645,50 @@ document.addEventListener('DOMContentLoaded', () => {
         // Recarrega o feed para atualizar o contador
         updateCommentCountOnFeed(postId, -1);
     };
-
+    
     const handleLikeComment = async (button) => {
         const commentId = button.dataset.commentId;
-        // A verificação agora é feita diretamente no SVG
+        const postId = button.dataset.postId;
         const svgIcon = button.querySelector('svg.lucide-heart');
         const isLiked = svgIcon.classList.contains('filled-blue');
 
         if (isLiked) {
             // Descurtir
-            const { error } = await supabaseClient.from('comment_likes').delete().match({ user_id: currentUser.id, comment_id: commentId });
-            if (!error) {
-                // Se sucesso, atualiza a UI
-                svgIcon.classList.remove('filled-blue');
-                const countElement = document.querySelector(`[data-comment-likes-count="${commentId}"]`);
-                if (countElement) {
-                    const newCount = Math.max(0, parseInt(countElement.textContent, 10) - 1);
-                    countElement.textContent = newCount;
-                }
-                await supabaseClient.rpc('update_comment_likes_count', { comment_id_to_update: commentId, increment_value: -1 });
-            }
+            await supabaseClient.from('comment_likes').delete().match({ user_id: currentUser.id, comment_id: commentId });
+            await supabaseClient.rpc('update_comment_likes_count', { comment_id_to_update: commentId, increment_value: -1 });
+            svgIcon.classList.remove('filled-blue');
         } else {
             // Curtir
-            const { error } = await supabaseClient.from('comment_likes').insert({ user_id: currentUser.id, comment_id: commentId }, { onConflict: ['user_id', 'comment_id'] });
-            if (!error) {
-                // Se sucesso, atualiza a UI
-                svgIcon.classList.add('filled-blue');
-                const countElement = document.querySelector(`[data-comment-likes-count="${commentId}"]`);
-                if (countElement) {
-                    countElement.textContent = parseInt(countElement.textContent, 10) + 1;
-                } else {
-                    const container = button.closest('.comment-item').querySelector('.text-xs');
-                    container.innerHTML = `<span><span data-comment-likes-count="${commentId}">1</span> curtida(s)</span>`;
-                }
+            const { error: likeError } = await supabaseClient.from('comment_likes').upsert({ user_id: currentUser.id, comment_id: commentId });
+            if (!likeError) {
                 await supabaseClient.rpc('update_comment_likes_count', { comment_id_to_update: commentId, increment_value: 1 });
-            } else { console.error("Erro ao curtir comentário:", error); alert("Erro ao curtir comentário: " + error.message); }
+                svgIcon.classList.add('filled-blue');
+                // Envia notificação
+                const { data: commentOwner } = await supabaseClient.from('comments').select('user_id').eq('id', commentId).single();
+                if (commentOwner && commentOwner.user_id !== currentUser.id) {
+                    await supabaseClient.from('notifications').upsert({ 
+                        user_id: commentOwner.user_id, 
+                        actor_id: currentUser.id, 
+                        type: 'comment_like',
+                        post_id: postId
+                    });
+                }
+            }
+        }
+
+        // Após curtir ou descurtir, busca o valor atualizado e atualiza a UI
+        const { data: commentData } = await supabaseClient.from('comments').select('likes_count').eq('id', commentId).single();
+        const countContainer = button.closest('.comment-item').querySelector('.comment-likes-container');
+        if (countContainer) { // O container existe, mas pode estar vazio
+            const newCount = commentData ? commentData.likes_count : 0;
+            if (newCount > 0) {
+                countContainer.innerHTML = `<span data-comment-likes-count="${commentId}">${newCount}</span> curtida(s)`;
+            } else {
+                countContainer.innerHTML = ''; // Remove o texto se não houver curtidas
+            }
         }
     };
-    
+
     const openPostOptionsModal = (button) => {
         // Esta função agora usa o modal genérico, que vai sobrepor o detalhe do post.
         const postId = button.dataset.postId;
@@ -756,140 +766,79 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
     };
-    
-    const handleLikePost = async (buttonElement) => {
-        const postId = buttonElement.dataset.postId;
-        // Seleciona todos os SVGs de coração para este post (no feed e no modal)
-        const svgIcons = document.querySelectorAll(`[data-action="like-post"][data-post-id="${postId}"] svg.lucide-heart`);
-        if (svgIcons.length === 0) return;
 
-        // Desabilita os botões para evitar cliques duplos
-        svgIcons.forEach(svg => svg.closest('button').disabled = true);
+    const handleLikePost = async (button) => {
+        const postId = button.dataset.postId;
+        const svgIcon = button.querySelector('svg.lucide-heart');
+        const isLiked = svgIcon.classList.contains('filled-blue');
+        button.disabled = true;
 
-        // 1. Check current like status from DB
-        const { data: existingLike, error: likeCheckError } = await supabaseClient
-            .from('like')
-            .select('user_id') // Verifica por uma coluna que sabemos que existe
-            .eq('user_id', currentUser.id)
-            .eq('post_id', postId)
-            .maybeSingle(); // Use maybeSingle() to return null if not found, instead of erroring
-
-        if (likeCheckError && likeCheckError.code !== 'PGRST116') { // PGRST116 is "No rows found"
-            console.error("[handleLikePost] Erro ao verificar curtida existente:", likeCheckError);
-            alert("Erro ao verificar curtida: " + likeCheckError.message);
-            svgIcons.forEach(svg => svg.closest('button').disabled = false);
-            return;
-        }
-
-        const isCurrentlyLiked = existingLike !== null;
-        console.log(`[handleLikePost] Post ID: ${postId}, User ID: ${currentUser.id}, isCurrentlyLiked (from DB): ${isCurrentlyLiked}`);
-
-        if (isCurrentlyLiked) {
-            // User wants to UNLIKE
-            console.log(`[handleLikePost] Attempting to UNLIKE post ${postId}`);
-            // Descurtir no DB
-            const { error: deleteError } = await supabaseClient.from('like').delete().match({ user_id: currentUser.id, post_id: postId });
-            if (!deleteError) {
-                console.log(`[handleLikePost] Successfully deleted like for post ${postId}`);
-                svgIcons.forEach(svg => svg.classList.remove('filled-blue'));
+        if (isLiked) {
+            // Descurtir
+            const { error } = await supabaseClient.from('like').delete().match({ user_id: currentUser.id, post_id: postId });
+            if (!error) {
+                // Primeiro, atualiza o contador no DB
+                await supabaseClient.rpc('update_likes_count', { post_id_to_update: postId, increment_value: -1 });
+                // Depois, busca o valor atualizado e atualiza a UI
+                document.querySelectorAll(`[data-action="like-post"][data-post-id="${postId}"] svg.lucide-heart`).forEach(svg => svg.classList.remove('filled-blue'));
+                const { data: postData } = await supabaseClient.from('posts').select('likes_count').eq('id', postId).single();
                 document.querySelectorAll(`strong[data-likes-count="${postId}"]`).forEach(el => {
-                    el.textContent = Math.max(0, parseInt(el.textContent, 10) - 1);
+                    el.textContent = postData ? postData.likes_count : 0;
                 });
-                // Depois, atualiza o contador no DB
-                const { error: rpcError } = await supabaseClient.rpc('increment_likes_count', { post_id_to_update: postId, increment_value: -1 });
-                if (rpcError) {
-                    console.error("[handleLikePost] Erro RPC ao decrementar likes_count:", rpcError);
-                }
             } else {
-                console.error("[handleLikePost] Erro ao descurtir post:", deleteError);
-                alert("Erro ao descurtir post: " + deleteError.message);
+                alert("Erro ao descurtir post: " + error.message);
             }
         } else {
-            // User wants to LIKE
-            console.log(`[handleLikePost] Attempting to LIKE post ${postId}`);
-            // Curtir no DB
-            const { error: insertError } = await supabaseClient.from('like').insert({ user_id: currentUser.id, post_id: postId });
-            if (!insertError) {
-                console.log(`[handleLikePost] Successfully inserted like for post ${postId}`);
-                svgIcons.forEach(svg => svg.classList.add('filled-blue'));
-                document.querySelectorAll(`strong[data-likes-count="${postId}"]`).forEach(el => {
-                    el.textContent = parseInt(el.textContent, 10) + 1;
-                });
-                // Depois, atualiza o contador e envia notificação
-                const { error: rpcError } = await supabaseClient.rpc('increment_likes_count', { post_id_to_update: postId, increment_value: 1 });
-                if (rpcError) {
-                    console.error("[handleLikePost] Erro RPC ao incrementar likes_count:", rpcError);
-                }
+            // Curtir
+            const { error: likeError } = await supabaseClient.from('like').upsert({ user_id: currentUser.id, post_id: postId });
+            if (!likeError) {
+                await supabaseClient.rpc('update_likes_count', { post_id_to_update: postId, increment_value: 1 });
+                document.querySelectorAll(`[data-action="like-post"][data-post-id="${postId}"] svg.lucide-heart`).forEach(svg => svg.classList.add('filled-blue', 'animate-heart-pulse'));
+                
                 const { data: postOwner } = await supabaseClient.from('posts').select('user_id').eq('id', postId).single();
                 if (postOwner && postOwner.user_id !== currentUser.id) {
-                    await supabaseClient.from('notifications').upsert({ user_id: postOwner.user_id, actor_id: currentUser.id, type: 'like', post_id: postId }, { onConflict: 'user_id,actor_id,type,post_id' });
+                    await supabaseClient.from('notifications').upsert({ user_id: postOwner.user_id, actor_id: currentUser.id, type: 'like', post_id: postId })
                 }
-            } else {
-                console.error("[handleLikePost] Erro ao curtir post:", insertError);
-                alert("Erro ao curtir post: " + insertError.message);
             }
         }
-        // Reabilita os botões após a operação
-        svgIcons.forEach(svg => svg.closest('button').disabled = false);
-    }; // Fecha a função handleLikePost
+        // Atualiza a contagem na UI em ambos os casos
+        const { data: postData } = await supabaseClient.from('posts').select('likes_count').eq('id', postId).single();
+        document.querySelectorAll(`strong[data-likes-count="${postId}"]`).forEach(el => {
+            el.textContent = postData ? postData.likes_count : 0;
+        });
+        button.disabled = false;
+    };
 
     const handleToggleFollow = async (button) => {
         const userIdToFollow = button.dataset.userId;
-        const currentState = button.textContent;
+        const currentState = button.textContent.trim();
 
         button.disabled = true;
+        button.innerHTML = '<div class="spinner mx-auto !w-4 !h-4 !border-2"></div>';
 
-        if (currentState === 'Seguindo') {
-            // Deixar de seguir
-            const { error } = await supabaseClient.from('followers').delete().match({ follower_id: currentUser.id, following_id: userIdToFollow });
-            if (!error) {
-                // Atualiza o botão em todos os lugares onde ele possa aparecer para este usuário
-                document.querySelectorAll(`button[data-action="toggle-follow"][data-user-id="${userIdToFollow}"]`).forEach(btn => {
+        const { data: status, error } = await supabaseClient.rpc('handle_follow_request', { p_receiver_id: userIdToFollow });
+
+        if (error) {
+            alert(`Erro: ${error.message}`);
+        } else {
+            // Atualiza todos os botões de seguir para este usuário na página
+            const allFollowButtons = document.querySelectorAll(`button[data-action="toggle-follow"][data-user-id="${userIdToFollow}"]`);
+            allFollowButtons.forEach(btn => {
+                if (status === 'followed' || status === 'unfollowed') {
+                    // Recarrega o perfil para atualizar a contagem de seguidores e o status do botão
+                    renderOtherUserProfile(userIdToFollow);
+                } else if (status === 'request_sent') {
+                    btn.textContent = 'Pendente';
+                    btn.classList.remove('bg-pink-500', 'text-white');
+                    btn.classList.add('bg-gray-200', 'text-gray-800');
+                } else if (status === 'request_cancelled') {
                     btn.textContent = 'Seguir';
-                    btn.classList.remove('bg-gray-200', 'text-gray-800', 'bg-gray-300');
+                    btn.classList.remove('bg-gray-200', 'text-gray-800');
                     btn.classList.add('bg-pink-500', 'text-white');
-                });
-            }
-        } else if (currentState === 'Seguir') {
-            // Ao clicar em "Seguir", primeiro verificamos se o perfil é privado
-            const { data: targetProfile } = await supabaseClient.from('profiles').select('is_private').eq('id', userIdToFollow).single();
-            const isPrivate = targetProfile?.is_private;
-
-            if (isPrivate) {
-                // Enviar solicitação para seguir
-                const { error } = await supabaseClient.from('follow_requests').insert({ requester_id: currentUser.id, receiver_id: userIdToFollow });
-                if (!error) {
-                    document.querySelectorAll(`button[data-action="toggle-follow"][data-user-id="${userIdToFollow}"]`).forEach(btn => {
-                        btn.textContent = 'Pendente';
-                        btn.classList.remove('bg-pink-500', 'text-white');
-                        btn.classList.add('bg-gray-200', 'text-gray-800');
-                    });
                 }
-            } else {
-                // Seguir diretamente (perfil público)
-                const { error } = await supabaseClient.from('followers').insert({ follower_id: currentUser.id, following_id: userIdToFollow });
-                if (!error) {
-                    document.querySelectorAll(`button[data-action="toggle-follow"][data-user-id="${userIdToFollow}"]`).forEach(btn => {
-                        btn.textContent = 'Seguindo';
-                        btn.classList.remove('bg-pink-500', 'text-white');
-                        btn.classList.add('bg-gray-200', 'text-gray-800');
-                    });
-                }
-            }
-        } else if (currentState === 'Pendente') {
-            // Cancelar solicitação
-            const { error } = await supabaseClient.from('follow_requests').delete().match({ requester_id: currentUser.id, receiver_id: userIdToFollow });
-            if (!error) {
-                button.textContent = 'Seguir';
-                button.classList.remove('bg-gray-200', 'text-gray-800');
-                button.classList.add('bg-pink-500', 'text-white');
-            }
+            });
         }
-
         button.disabled = false;
-
-        // Atualiza os contadores no perfil do usuário logado
-        renderUserProfile(currentUser);
     };
 
     const handleAcceptFollow = async (button) => {
@@ -900,31 +849,40 @@ document.addEventListener('DOMContentLoaded', () => {
         button.disabled = true;
         button.textContent = 'Aceitando...';
 
-        // 1. Adiciona o seguidor na tabela 'followers'
+        // 1. Adiciona o seguidor
         const { error: followError } = await supabaseClient.from('followers').insert({ follower_id: actorId, following_id: receiverId });
-
         if (followError) {
             alert('Erro ao aceitar solicitação: ' + followError.message);
             button.disabled = false;
             return;
         }
 
-        // 2. Remove a solicitação da tabela 'follow_requests'
-        await supabaseClient.from('follow_requests').delete().eq('id', requestId);
+        // 2. Remove a solicitação e a notificação correspondente
+        await supabaseClient.from('follow_requests').delete().eq('requester_id', actorId).eq('receiver_id', receiverId);
+        await supabaseClient.from('notifications').delete().eq('id', requestId);
 
-        // 3. Atualiza a UI da notificação
+        // 3. Atualiza a UI
         const notificationItem = button.closest('.p-4');
-        notificationItem.querySelector('p').innerHTML += ' <strong>(aceito)</strong>';
-        notificationItem.querySelectorAll('button').forEach(b => b.remove());
+        if (notificationItem) {
+            notificationItem.querySelector('p').innerHTML += ' <strong>(aceito)</strong>';
+            notificationItem.querySelectorAll('button').forEach(b => b.remove());
+        }
     };
 
     const handleDenyFollow = async (button) => {
         const requestId = button.dataset.requestId;
+        const actorId = button.dataset.actorId;
+        const receiverId = currentUser.id;
+
         button.disabled = true;
-        await supabaseClient.from('follow_requests').delete().eq('id', requestId);
+        await supabaseClient.from('follow_requests').delete().eq('requester_id', actorId).eq('receiver_id', receiverId);
+        await supabaseClient.from('notifications').delete().eq('id', requestId);
+
         const notificationItem = button.closest('.p-4');
-        notificationItem.querySelector('p').innerHTML += ' <strong>(recusado)</strong>';
-        notificationItem.querySelectorAll('button').forEach(b => b.remove());
+        if (notificationItem) {
+            notificationItem.querySelector('p').innerHTML += ' <strong>(recusado)</strong>';
+            notificationItem.querySelectorAll('button').forEach(b => b.remove());
+        }
     };
 
     const renderExplorePage = async () => {
@@ -1025,17 +983,20 @@ document.addEventListener('DOMContentLoaded', () => {
             like: 'curtiu sua publicação.',
             comment: 'comentou na sua publicação.',
             follow: 'começou a seguir você.',
-            follow_request: 'quer seguir você.' // Nova notificação
+            follow_request: 'quer seguir você.',
+            comment_like: 'curtiu seu comentário.'
         };
 
         notificationsPage.innerHTML = notifications.map(n => `
             <div class="p-4 flex items-center border-b border-gray-100">
-                <img src="${n.actor.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + n.actor.username.charAt(0)}" class="w-10 h-10 rounded-full mr-3">
-                <p class="flex-grow text-sm"><strong>${n.actor.username}</strong> ${notificationMessages[n.type] || 'interagiu com você.'}</p>
+                <div class="flex items-center flex-grow cursor-pointer" data-action="open-other-profile" data-user-id="${n.actor_id}">
+                    <img src="${n.actor.avatar_url || 'https://placehold.co/40x40/ccc/fff?text=' + n.actor.username.charAt(0)}" class="w-10 h-10 rounded-full mr-3 pointer-events-none">
+                    <p class="text-sm pointer-events-none"><strong>${n.actor.username}</strong> ${notificationMessages[n.type] || 'interagiu com você.'}</p>
+                </div>
                 ${n.post_id && n.posts ? `<img src="${SUPABASE_URL}/storage/v1/object/public/posts-images/${n.posts.image_url}" class="w-10 h-10 object-cover rounded-md ml-2">` : ''}
                 ${n.type === 'follow_request' ? `
                     <button data-action="accept-follow" data-request-id="${n.id}" data-actor-id="${n.actor_id}" class="bg-pink-500 text-white text-xs font-bold px-3 py-1 rounded-md ml-2">Aceitar</button>
-                    <button data-action="deny-follow" data-request-id="${n.id}" class="bg-gray-200 text-gray-700 text-xs font-bold px-3 py-1 rounded-md ml-1">Recusar</button>
+                    <button data-action="deny-follow" data-request-id="${n.id}" data-actor-id="${n.actor_id}" class="bg-gray-200 text-gray-700 text-xs font-bold px-3 py-1 rounded-md ml-1">Recusar</button>
                 ` : ''}
             </div>
         `).join('');
@@ -1108,7 +1069,7 @@ document.addEventListener('DOMContentLoaded', () => {
         openModal(`
             <div class="p-6 text-center">
                 <h2 class="text-xl font-bold mb-4">Catalogar Peça</h2>
-                <p class="text-gray-500 mb-6">Adicione uma foto de uma peça de roupa para que nossa I.A. a categorize automaticamente.</p>
+                <p class="text-gray-500 mb-6">Adicione uma foto de uma peça de roupa para que nossa I.A. a categorize automaticamente.</p>                
                 <input type="file" id="wardrobe-image-input" class="hidden" accept="image/*" capture="environment">
                 <button id="select-wardrobe-image-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md">Adicionar Peça</button>
                 <button data-action="close-modal" class="mt-2 text-gray-500 text-sm">Cancelar</button>
@@ -1184,29 +1145,47 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('select-selfie-btn').addEventListener('click', () => document.getElementById('selfie-image-input').click());
         document.getElementById('selfie-image-input').addEventListener('change', (e) => {
             if (e.target.files && e.target.files[0]) {
-                openModal(`<div class="p-8 text-center flex flex-col items-center justify-center min-h-[250px]"><div class="spinner mb-4"></div><p class="text-gray-600">Analisando seus tons...</p></div>`);
-                setTimeout(() => {
-                    openModal(`
-                        <div class="p-6">
-                            <h2 class="text-xl font-bold text-center mb-4">Sua Paleta de Cores</h2>
-                            <p class="text-center text-gray-600 mb-1">Sua estação é:</p>
-                            <p class="text-center font-bold text-lg mb-4">Inverno Frio</p>
-                            <div class="grid grid-cols-4 gap-2 h-24">
-                                <div class="rounded-lg bg-blue-900"></div>
-                                <div class="rounded-lg bg-pink-500"></div>
-                                <div class="rounded-lg bg-gray-800"></div>
-                                <div class="rounded-lg bg-white border"></div>
-                                <div class="rounded-lg bg-red-600"></div>
-                                <div class="rounded-lg bg-purple-700"></div>
-                                <div class="rounded-lg bg-emerald-500"></div>
-                                <div class="rounded-lg bg-gray-400"></div>
-                            </div>
-                            <button data-action="close-modal" class="mt-6 w-full bg-pink-500 text-white font-semibold py-2 rounded-lg">Entendi</button>
-                        </div>
-                    `);
-                }, 2000);
+                performColorAnalysis(e.target.files[0]);
             }
         });
+    };
+
+    const performColorAnalysis = async (file) => {
+        openModal(`
+            <div class="p-8 text-center flex flex-col items-center justify-center min-h-[250px]">
+                <div class="spinner mb-4"></div>
+                <p class="text-gray-600">Nossa I.A. está analisando seus tons...</p>
+            </div>
+        `);
+
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = async (event) => {
+            try {
+                const imageBase64 = event.target.result;
+                const { data: results, error } = await supabaseClient.functions.invoke('analyze-color-palette', {
+                    body: { image: imageBase64 },
+                });
+
+                if (error) throw error;
+
+                const paletteHtml = results.paleta.map(color => `<div class="rounded-lg" style="background-color: ${color}"></div>`).join('');
+
+                openModal(`
+                    <div class="p-6">
+                        <h2 class="text-xl font-bold text-center mb-4">Sua Paleta de Cores</h2>
+                        <p class="text-center text-gray-600 mb-1">Sua estação é:</p>
+                        <p class="text-center font-bold text-lg mb-4">${results.estacao}</p>
+                        <div class="grid grid-cols-4 gap-2 h-24 mb-4">${paletteHtml}</div>
+                        <p class="text-sm text-gray-600 text-center"><strong>Dica:</strong> ${results.dicas}</p>
+                        <button data-action="close-modal" class="mt-6 w-full bg-pink-500 text-white font-semibold py-2 rounded-lg">Entendi</button>
+                    </div>
+                `);
+            } catch (error) {
+                console.error('Erro na análise de coloração:', error);
+                openModal(showMessage(`<p><strong>Ops!</strong> A I.A. está tirando um cochilo. Tente novamente mais tarde.</p><p class="text-xs mt-2">${error.message}</p>`, 'error'));
+            }
+        };
     };
 
     const openTripPlannerFlow = () => {
@@ -1287,7 +1266,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="p-6 text-center">
                 <h2 class="text-xl font-bold mb-4">Análise de Look com I.A.</h2>
                 <p class="text-gray-500 mb-6">Envie uma foto do seu look para receber um feedback de estilo detalhado.</p>
-                <p class="text-sm text-gray-600 mb-4"><strong>Dica:</strong> Para uma análise precisa, use fotos nítidas que mostrem bem o look completo.</p>
+                <p class="text-sm text-gray-600 mb-4"><strong>Dica:</strong> Para uma análise precisa, use fotos nítidas que mostrem bem o look completo.</p>                
                 <input type="file" id="analysis-image-input" class="hidden" accept="image/*" capture="environment">
                 <button id="select-analysis-image-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md">Selecionar Imagem</button>
                 <button data-action="close-modal" class="mt-2 text-gray-500 text-sm">Cancelar</button>
@@ -1334,7 +1313,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     // Chama a Supabase Edge Function 'analyze-look'
                     const { data: results, error } = await supabaseClient.functions.invoke('analyze-look', {
-                        body: JSON.stringify({ image: imageBase64 }),
+                        body: { image: imageBase64 },
                     });
 
                     if (error) {
@@ -1511,7 +1490,7 @@ document.addEventListener('DOMContentLoaded', () => {
         openModal(`
             <div class="p-6 text-center">
                 <h2 class="text-xl font-bold mb-4">Criar Novo Post</h2>
-                <p class="text-gray-500 mb-6">Selecione uma imagem do seu dispositivo.</p>
+                <p class="text-gray-500 mb-6">Selecione uma imagem do seu dispositivo.</p>                
                 <input type="file" id="post-image-input" class="hidden" accept="image/*" capture="environment">
                 <button id="select-image-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md">Selecionar Imagem</button>
                 <button data-action="close-modal" class="mt-2 text-gray-500 text-sm">Cancelar</button>
@@ -1567,7 +1546,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    const showPage = (pageId, title) => {
+    const showPage = (pageId, title = '') => {
         const isSubPage = ['comments', 'other-profile'].includes(pageId);
 
         mainHeader.classList.toggle('hidden', isSubPage);
@@ -1591,13 +1570,9 @@ document.addEventListener('DOMContentLoaded', () => {
             authScreen.style.display = 'none';
             appContent.classList.remove('hidden');
             appContent.style.display = 'flex';
-            // Renderiza todas as páginas principais
-            await Promise.all([
-                renderFeed(), 
-                renderUserProfile(currentUser),
-                renderExplorePage(),
-                renderAnalyzePage()
-            ]);
+            // Garante que a aba do feed esteja ativa e renderiza seu conteúdo.
+            const feedTab = document.querySelector('.tab-btn[data-page="feed"]');
+            if (feedTab) feedTab.click(); // Simula um clique na aba do feed para carregar a página inicial.
         } else {
             appContent.style.display = 'none';
             authScreen.style.display = 'flex';
@@ -1606,50 +1581,12 @@ document.addEventListener('DOMContentLoaded', () => {
         lucide.createIcons();
     };
 
-    const initialize = () => {
+    const initialize = async () => {
         supabaseClient = createClient(SUPABASE_URL, SUPABASE_KEY);
         window.supabaseClient = supabaseClient; // Expondo o cliente para depuração no console
         addEventListeners();
-        supabaseClient.auth.onAuthStateChange((_event, session) => {
+        supabaseClient.auth.onAuthStateChange(async (_event, session) => {
 // Adicione esta função também
-const handleUpdatePassword = async () => {
-    const password = document.getElementById('password').value;
-    const updateBtn = document.getElementById('update-password-btn');
-    const messageDiv = document.getElementById('auth-message');
-    messageDiv.innerHTML = '';
-
-    if (password.length < 6) {
-        messageDiv.innerHTML = showMessage('<p>A senha deve ter no mínimo 6 caracteres.</p>', 'error');
-        return;
-    }
-
-    updateBtn.disabled = true;
-    updateBtn.innerText = 'Salvando...';
-
-    const { error } = await supabaseClient.auth.updateUser({ password: password });
-
-    if (error) {
-        messageDiv.innerHTML = showMessage(`<p>${error.message}</p>`, 'error');
-        updateBtn.disabled = false;
-        updateBtn.innerText = 'Salvar Nova Senha';
-    } else {
-        authContainer.innerHTML = showMessage(`<p class="font-bold">Senha atualizada!</p><p>Sua senha foi alterada com sucesso. Você já pode fazer o login.</p><button id="back-to-login" class="mt-4 text-pink-500 font-semibold">Ir para Login</button>`, 'success');
-        document.getElementById('back-to-login').addEventListener('click', showLoginForm);
-    }
-};
-// Adicione esta função junto com as outras de autenticação (showLoginForm, etc.)
-const showUpdatePasswordForm = () => {
-    authContainer.innerHTML = `
-        <div id="auth-message"></div>
-        <h2 class="text-xl font-bold text-center mb-2">Crie uma Nova Senha</h2>
-        <p class="text-gray-500 text-center text-sm mb-6">Digite sua nova senha abaixo.</p>
-        <input id="password" type="password" placeholder="Nova Senha (mín. 6 caracteres)" class="w-full p-3 border rounded-lg mb-4">
-        <button id="update-password-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md mb-4">Salvar Nova Senha</button>
-        <p class="text-center text-sm"><a href="#" id="back-to-login" class="text-pink-500 font-semibold">Voltar para Login</a></p>
-    `;
-    document.getElementById('back-to-login').addEventListener('click', showLoginForm);
-    document.getElementById('update-password-btn').addEventListener('click', handleUpdatePassword);
-};
             // Se o evento for de recuperação de senha, mostre o formulário para atualizar.
             if (_event === 'PASSWORD_RECOVERY') {
                 authScreen.style.display = 'flex';
@@ -1657,11 +1594,24 @@ const showUpdatePasswordForm = () => {
                 showUpdatePasswordForm();
                 return; // Impede que o resto da função execute
             }
-            updateUIForSession(session);
+            await updateUIForSession(session);
         });
-        supabaseClient.auth.getSession().then(({ data: { session } }) => {
-            updateUIForSession(session);
-        });
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        await updateUIForSession(session);
+    };
+
+    // --- INICIALIZAÇÃO E EVENT LISTENERS ---
+    const showUpdatePasswordForm = () => {
+        authContainer.innerHTML = `
+            <div id="auth-message"></div>
+            <h2 class="text-xl font-bold text-center mb-2">Crie uma Nova Senha</h2>
+            <p class="text-gray-500 text-center text-sm mb-6">Digite sua nova senha abaixo.</p>
+            <input id="password" type="password" placeholder="Nova Senha (mín. 6 caracteres)" class="w-full p-3 border rounded-lg mb-4">
+            <button id="update-password-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md mb-4">Salvar Nova Senha</button>
+            <p class="text-center text-sm"><a href="#" id="back-to-login" class="text-pink-500 font-semibold">Voltar para Login</a></p>
+        `;
+        document.getElementById('back-to-login').addEventListener('click', showLoginForm);
+        document.getElementById('update-password-btn').addEventListener('click', handleUpdatePassword);
     };
 
     const handleUpdatePassword = async () => {
@@ -1689,7 +1639,7 @@ const showUpdatePasswordForm = () => {
             document.getElementById('back-to-login').addEventListener('click', showLoginForm);
         }
     };
-    
+
     const addEventListeners = () => {
         document.body.addEventListener('click', (e) => {
             const element = e.target.closest('[data-action]'); // Procura o elemento clicado ou um pai com data-action
@@ -1730,84 +1680,68 @@ const showUpdatePasswordForm = () => {
         });
 
         tabButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                const pageId = `page-${button.dataset.page}`;
+            button.addEventListener('click', async () => {
                 const pageName = button.dataset.page;
+                const pageId = `page-${pageName}`;
+                const pageElement = document.getElementById(pageId);
+
+                // Lógica de UI para trocar de aba
                 tabButtons.forEach(btn => btn.classList.remove('active'));
                 button.classList.add('active');
-                pages.forEach(page => page.classList.remove('active'));
-                document.getElementById(pageId).classList.add('active');
+                document.querySelectorAll('.page').forEach(page => page.classList.remove('active'));
+                pageElement.classList.add('active');
+
+                // Lógica de UI para o cabeçalho
                 const titles = { feed: 'OUTFY', explorar: 'Explorar', analisar: 'Analisar Look', notificacoes: 'Notificações', perfil: 'Perfil' };
-                headerTitle.textContent = titles[button.dataset.page] || 'OUTFY';
+                headerTitle.textContent = titles[pageName] || 'OUTFY';
                 mainHeader.classList.remove('hidden');
                 pageHeader.classList.add('hidden');
 
-                // Esconde a página de perfil de outro usuário se estiver ativa
-                const otherProfilePage = document.getElementById('page-other-profile');
-                if (otherProfilePage) {
-                    otherProfilePage.classList.remove('active');
-                }
+                // Renderiza o conteúdo da página clicada.
+                // A verificação se o conteúdo já existe foi removida para garantir que sempre carregue.
+                // O spinner interno de cada função de renderização já lida com a UI de carregamento.
+                if (pageName === 'feed') await renderFeed();
+                else if (pageName === 'explorar') await renderExplorePage();
+                else if (pageName === 'analisar') renderAnalyzePage();
+                else if (pageName === 'perfil') await renderUserProfile(currentUser);
             });
         });
+
         postButton.addEventListener('click', openPostModal);
+
         notificationButton.addEventListener('click', () => {
-            // Abre a página de notificações e atualiza o conteúdo
             const notifPage = document.getElementById('page-notificacoes');
-            pages.forEach(p => p.classList.remove('active'));
+            document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
             notifPage.classList.add('active');
             headerTitle.textContent = 'Notificações';
-            // Desativa todas as abas do rodapé, pois notificações é uma ação do cabeçalho
             tabButtons.forEach(btn => btn.classList.remove('active'));
             renderNotificationsPage();
         });
 
-        // O botão de voltar agora é configurado dinamicamente por quem o abre
-        // Removendo o listener genérico.
-        // backButton.addEventListener('click', () => {
-        //     // Por enquanto, o back button sempre volta para o feed.
-        //     // Isso pode ser melhorado no futuro com um histórico de navegação.
-        //     const feedTab = document.querySelector('.tab-btn[data-page="feed"]');
-        //     if (feedTab) feedTab.click();
-        // });
-
-        pageHeader.querySelector('#back-button').addEventListener('click', () => {
+        backButton.addEventListener('click', () => {
+            // Comportamento padrão: voltar para o feed
             const feedTab = document.querySelector('.tab-btn[data-page="feed"]');
-            if (feedTab) feedTab.click(); // Comportamento padrão de voltar para o feed
-        });
-
-        // Fecha o modal genérico ao clicar no fundo
-        modalContainer.addEventListener('click', (e) => {
-            if (e.target === modalContainer) {
-                closeModal();
-            }
-        });
-        // Fecha o modal de detalhe do post ao clicar no fundo
-        postDetailModal.addEventListener('click', (e) => {
-            if (e.target === postDetailModal) {
-                closePostDetailModal();
+            if (feedTab) {
+                feedTab.click();
+            } else {
+                // Fallback caso o botão do feed não seja encontrado
+                showPage('feed');
+                mainHeader.classList.remove('hidden');
+                pageHeader.classList.add('hidden');
             }
         });
 
-        // Fecha o modal de sobreposição ao clicar no fundo
-        overlayModal.addEventListener('click', (e) => {
-            if (e.target === overlayModal) {
-                closeOverlayModal();
-            }
+        // Fecha modais ao clicar no fundo
+        [modalContainer, postDetailModal, overlayModal].forEach(modal => {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    if (modal === modalContainer) closeModal();
+                    if (modal === postDetailModal) closePostDetailModal();
+                    if (modal === overlayModal) closeOverlayModal();
+                }
+            });
         });
     };
-    
-    const showUpdatePasswordForm = () => {
-        authContainer.innerHTML = `
-            <div id="auth-message"></div>
-            <h2 class="text-xl font-bold text-center mb-2">Crie uma Nova Senha</h2>
-            <p class="text-gray-500 text-center text-sm mb-6">Digite sua nova senha abaixo.</p>
-            <input id="password" type="password" placeholder="Nova Senha (mín. 6 caracteres)" class="w-full p-3 border rounded-lg mb-4">
-            <button id="update-password-btn" class="w-full bg-pink-500 text-white font-semibold py-3 rounded-lg shadow-md mb-4">Salvar Nova Senha</button>
-            <p class="text-center text-sm"><a href="#" id="back-to-login" class="text-pink-500 font-semibold">Voltar para Login</a></p>
-        `;
-        document.getElementById('back-to-login').addEventListener('click', showLoginForm);
-        document.getElementById('update-password-btn').addEventListener('click', handleUpdatePassword);
-    };
 
-    initialize();
+    await initialize();
 });
